@@ -14,7 +14,9 @@ type BootstrapConfig struct {
 }
 
 func IsOperational(state GameState) bool {
-	return state.Inventory.Quantity(ItemDesk) >= 1 && state.Inventory.Quantity(ItemChair) >= 1
+	return state.CompanyInventory.ActiveQuantity(ItemDesk) >= 1 &&
+		state.CompanyInventory.ActiveQuantity(ItemChair) >= 1 &&
+		state.CompanyInventory.ActiveQuantity(ItemComputer) >= 1
 }
 
 func DefaultBootstrapConfig(catalog Catalog) BootstrapConfig {
@@ -38,7 +40,11 @@ func OperationalReadinessCost(catalog Catalog) (int, error) {
 	if !ok {
 		return 0, ErrOperationalItemNotFound
 	}
-	return desk.Price + chair.Price, nil
+	computer, ok := catalog.Item(ItemComputer)
+	if !ok {
+		return 0, ErrOperationalItemNotFound
+	}
+	return desk.Price + chair.Price + computer.Price, nil
 }
 
 func MinimumStartingCash(catalog Catalog, bufferCash int) (int, error) {

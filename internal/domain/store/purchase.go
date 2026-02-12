@@ -14,19 +14,28 @@ func ApplyPurchase(state GameState, catalog Catalog, cfg EconomyConfig, itemID I
 	if !ok {
 		return GameState{}, ErrItemNotFound
 	}
-	if item.Price < 0 {
+	if item.Price < 0 || item.DurabilityDays <= 0 {
 		return GameState{}, ErrInvalidState
 	}
 	if state.Cash < item.Price {
 		return GameState{}, ErrInsufficientFunds
 	}
-	if item.MaxOwned > 0 && state.Inventory.Quantity(itemID) >= item.MaxOwned {
+
+	target := state.CompanyInventory
+	if item.Ownership == OwnershipPlayer {
+		target = state.PlayerInventory
+	}
+	if item.MaxOwned > 0 && target.Quantity(itemID) >= item.MaxOwned {
 		return GameState{}, ErrMaxOwned
 	}
 
 	next := state
 	next.Cash -= item.Price
-	next.Inventory = next.Inventory.WithAdded(itemID, 1)
+	if item.Ownership == OwnershipPlayer {
+		next.PlayerInventory = next.PlayerInventory.Add(item, state.Day, 1)
+	} else {
+		next.CompanyInventory = next.CompanyInventory.Add(item, state.Day, 1)
+	}
 	next = RecomputeMetrics(next, catalog, cfg)
 	return next, nil
 }

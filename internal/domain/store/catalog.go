@@ -4,6 +4,13 @@ import "sort"
 
 type ItemID string
 
+type ItemOwnership string
+
+const (
+	OwnershipPlayer  ItemOwnership = "player"
+	OwnershipCompany ItemOwnership = "company"
+)
+
 const (
 	ItemDesk     ItemID = "desk"
 	ItemChair    ItemID = "chair"
@@ -18,12 +25,14 @@ type Effects struct {
 }
 
 type Item struct {
-	ItemID      ItemID  `json:"item_id"`
-	DisplayName string  `json:"display_name"`
-	Category    string  `json:"category"`
-	Price       int     `json:"price"`
-	Effects     Effects `json:"effects"`
-	MaxOwned    int     `json:"max_owned"`
+	ItemID         ItemID        `json:"item_id"`
+	DisplayName    string        `json:"display_name"`
+	Category       string        `json:"category"`
+	Ownership      ItemOwnership `json:"ownership"`
+	Price          int           `json:"price"`
+	DurabilityDays int           `json:"durability_days"`
+	Effects        Effects       `json:"effects"`
+	MaxOwned       int           `json:"max_owned"`
 }
 
 type CatalogConfig struct {
@@ -38,10 +47,12 @@ type Catalog struct {
 func DefaultCatalogConfig() CatalogConfig {
 	return CatalogConfig{Items: map[ItemID]Item{
 		ItemDesk: {
-			ItemID:      ItemDesk,
-			DisplayName: "Desk",
-			Category:    "Office",
-			Price:       150,
+			ItemID:         ItemDesk,
+			DisplayName:    "Desk",
+			Category:       "Office",
+			Ownership:      OwnershipCompany,
+			Price:          150,
+			DurabilityDays: 365,
 			Effects: Effects{
 				ProductivityDelta: 2,
 				MoraleDelta:       1,
@@ -49,10 +60,12 @@ func DefaultCatalogConfig() CatalogConfig {
 			MaxOwned: 1,
 		},
 		ItemChair: {
-			ItemID:      ItemChair,
-			DisplayName: "Chair",
-			Category:    "Office",
-			Price:       100,
+			ItemID:         ItemChair,
+			DisplayName:    "Chair",
+			Category:       "Office",
+			Ownership:      OwnershipCompany,
+			Price:          100,
+			DurabilityDays: 180,
 			Effects: Effects{
 				ProductivityDelta: 1,
 				MoraleDelta:       2,
@@ -60,10 +73,12 @@ func DefaultCatalogConfig() CatalogConfig {
 			MaxOwned: 1,
 		},
 		ItemComputer: {
-			ItemID:      ItemComputer,
-			DisplayName: "Computer",
-			Category:    "Office",
-			Price:       500,
+			ItemID:         ItemComputer,
+			DisplayName:    "Computer",
+			Category:       "Office",
+			Ownership:      OwnershipCompany,
+			Price:          500,
+			DurabilityDays: 120,
 			Effects: Effects{
 				ProductivityDelta: 5,
 			},

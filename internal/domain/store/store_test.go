@@ -26,62 +26,102 @@ func TestDefaultCatalogContainsRequiredStableItems(t *testing.T) {
 		if item.MaxOwned != 1 {
 			t.Fatalf("expected max owned 1 for %s", id)
 		}
+		if item.DurabilityDays <= 0 {
+			t.Fatalf("expected durability for %s", id)
+		}
+		if item.Ownership != OwnershipCompany {
+			t.Fatalf("expected company ownership for %s", id)
+		}
 	}
 }
 
 func TestCatalogConfigDrivenValues(t *testing.T) {
 	cfg := CatalogConfig{Items: map[ItemID]Item{
-		ItemDesk: {DisplayName: "Desk", Category: "Office", Price: 999, Effects: Effects{ProductivityDelta: 9}},
+		ItemDesk: {
+			DisplayName:    "Desk",
+			Category:       "Office",
+			Ownership:      OwnershipPlayer,
+			Price:          999,
+			DurabilityDays: 7,
+			Effects:        Effects{ProductivityDelta: 9},
+		},
 	}}
 	catalog := NewCatalog(cfg)
 	item, ok := catalog.Item(ItemDesk)
 	if !ok {
 		t.Fatal("expected desk")
 	}
-	if item.Price != 999 || item.Effects.ProductivityDelta != 9 || item.ItemID != ItemDesk {
+	if item.Price != 999 || item.Effects.ProductivityDelta != 9 || item.ItemID != ItemDesk || item.Ownership != OwnershipPlayer {
 		t.Fatalf("unexpected item: %+v", item)
 	}
 }
 
-func TestInventoryAndDeterministicOrdering(t *testing.T) {
-	inv := NewInventoryFromEntries([]InventoryEntry{
-		{ItemID: ItemDesk, Quantity: 1},
-		{ItemID: ItemChair, Quantity: 2},
-		{ItemID: ItemComputer, Quantity: 1},
+func TestInventoryDeterministicOrderingAndQuantity(t *testing.T) {
+	inv := NewInventoryFromEntries([]InventoryItemInstance{
+		{ItemID: ItemDesk, Quantity: 1, AcquiredAtDay: 4, RemainingDurabilityDays: 10},
+		{ItemID: ItemChair, Quantity: 2, AcquiredAtDay: 1, RemainingDurabilityDays: 2},
+		{ItemID: ItemComputer, Quantity: 1, AcquiredAtDay: 3, RemainingDurabilityDays: 0},
+		{ItemID: ItemDesk, Quantity: 1, AcquiredAtDay: 2, RemainingDurabilityDays: -5},
+		{ItemID: ItemDesk, Quantity: 1, AcquiredAtDay: 2, RemainingDurabilityDays: 9},
+		{ItemID: ItemDesk, Quantity: 0, AcquiredAtDay: 0, RemainingDurabilityDays: 1},
 	})
-	if inv.Quantity(ItemChair) != 2 {
-		t.Fatalf("got %d", inv.Quantity(ItemChair))
-	}
 	entries := inv.Entries()
-	if len(entries) != 3 {
+	if len(entries) != 5 {
 		t.Fatalf("got %d", len(entries))
 	}
 	if entries[0].ItemID != ItemChair || entries[1].ItemID != ItemComputer || entries[2].ItemID != ItemDesk {
 		t.Fatalf("entries not sorted: %+v", entries)
 	}
+	if entries[2].AcquiredAtDay != 2 || entries[2].RemainingDurabilityDays != 0 {
+		t.Fatalf("expected normalized durability and acquired sort: %+v", entries[2])
+	}
+	if entries[3].AcquiredAtDay != 2 || entries[3].RemainingDurabilityDays != 9 {
+		t.Fatalf("expected durability tie sort: %+v", entries[3])
+	}
+	if inv.Quantity(ItemChair) != 2 {
+		t.Fatalf("qty got %d", inv.Quantity(ItemChair))
+	}
+	if inv.ActiveQuantity(ItemComputer) != 0 {
+		t.Fatalf("active qty got %d", inv.ActiveQuantity(ItemComputer))
+	}
 }
 
-func TestInventoryWithAddedAndDeletePath(t *testing.T) {
-	inv := NewInventory()
-	inv = inv.WithAdded(ItemDesk, 1)
-	if inv.Quantity(ItemDesk) != 1 {
-		t.Fatalf("got %d", inv.Quantity(ItemDesk))
-	}
-	inv = inv.WithAdded(ItemDesk, -1)
-	if inv.Quantity(ItemDesk) != 0 {
-		t.Fatalf("got %d", inv.Quantity(ItemDesk))
-	}
-}
-
-func TestAggregateEffects(t *testing.T) {
+func TestInventoryAddAndDurabilityDecay(t *testing.T) {
 	catalog := DefaultCatalog()
-	inv := NewInventoryFromEntries([]InventoryEntry{{ItemID: ItemDesk, Quantity: 1}, {ItemID: ItemChair, Quantity: 1}})
-	effects := AggregateEffects(catalog, inv)
-	if effects.ProductivityDelta != 3 {
-		t.Fatalf("got %d", effects.ProductivityDelta)
+	desk, _ := catalog.Item(ItemDesk)
+	inv := NewInventory().Add(desk, 1, 1)
+	if inv.Quantity(ItemDesk) != 1 {
+		t.Fatalf("qty got %d", inv.Quantity(ItemDesk))
 	}
-	if effects.MoraleDelta != 3 {
-		t.Fatalf("got %d", effects.MoraleDelta)
+	inv = inv.DecrementDurabilityByDay()
+	entries := inv.Entries()
+	if entries[0].RemainingDurabilityDays != desk.DurabilityDays-1 {
+		t.Fatalf("durability got %d", entries[0].RemainingDurabilityDays)
+	}
+	unchanged := inv.Add(desk, 2, 0)
+	if len(unchanged.Entries()) != len(inv.Entries()) {
+		t.Fatal("expected no change when adding non-positive quantity")
+	}
+}
+
+func TestActiveEffectsExcludesBroken(t *testing.T) {
+	catalog := DefaultCatalog()
+	inv := NewInventoryFromEntries([]InventoryItemInstance{
+		{ItemID: ItemDesk, Quantity: 1, AcquiredAtDay: 1, RemainingDurabilityDays: 10},
+		{ItemID: ItemChair, Quantity: 1, AcquiredAtDay: 1, RemainingDurabilityDays: 0},
+	})
+	effects := inv.ActiveEffects(catalog)
+	if effects.ProductivityDelta != 2 {
+		t.Fatalf("prod got %d", effects.ProductivityDelta)
+	}
+	if effects.MoraleDelta != 1 {
+		t.Fatalf("morale got %d", effects.MoraleDelta)
+	}
+
+	unknown := NewInventoryFromEntries([]InventoryItemInstance{{ItemID: ItemID("unknown"), Quantity: 1, RemainingDurabilityDays: 5}})
+	effects = unknown.ActiveEffects(catalog)
+	if effects != (Effects{}) {
+		t.Fatalf("expected zero effects for unknown item, got %+v", effects)
 	}
 }
 
@@ -90,34 +130,62 @@ func TestApplyPurchaseTable(t *testing.T) {
 	econ := DefaultEconomyConfig()
 	base := NewInitialState(1000, catalog, econ)
 
+	playerCatalog := NewCatalog(CatalogConfig{Items: map[ItemID]Item{
+		ItemDesk: {
+			DisplayName:    "Notebook",
+			Category:       "Personal",
+			Ownership:      OwnershipPlayer,
+			Price:          10,
+			DurabilityDays: 20,
+			MaxOwned:       2,
+		},
+	}})
+
 	tests := []struct {
 		name    string
 		state   GameState
+		catalog Catalog
 		itemID  ItemID
 		wantErr error
 		check   func(t *testing.T, got GameState)
 	}{
 		{
-			name:   "success",
-			state:  base,
-			itemID: ItemDesk,
+			name:    "company purchase routes to company inventory",
+			state:   base,
+			catalog: catalog,
+			itemID:  ItemDesk,
 			check: func(t *testing.T, got GameState) {
 				if got.Cash != base.Cash-150 {
 					t.Fatalf("cash got %d", got.Cash)
 				}
-				if got.Inventory.Quantity(ItemDesk) != 1 {
-					t.Fatalf("desk qty got %d", got.Inventory.Quantity(ItemDesk))
+				if got.CompanyInventory.Quantity(ItemDesk) != 1 {
+					t.Fatalf("company desk qty got %d", got.CompanyInventory.Quantity(ItemDesk))
 				}
-				if got.Metrics.Productivity <= base.Metrics.Productivity {
-					t.Fatalf("productivity did not increase")
+				if got.PlayerInventory.Quantity(ItemDesk) != 0 {
+					t.Fatalf("player desk qty got %d", got.PlayerInventory.Quantity(ItemDesk))
 				}
 			},
 		},
-		{name: "unknown item", state: base, itemID: ItemID("unknown"), wantErr: ErrItemNotFound},
-		{name: "insufficient funds", state: NewInitialState(10, catalog, econ), itemID: ItemComputer, wantErr: ErrInsufficientFunds},
+		{
+			name:    "player ownership routes to player inventory",
+			state:   base,
+			catalog: playerCatalog,
+			itemID:  ItemDesk,
+			check: func(t *testing.T, got GameState) {
+				if got.PlayerInventory.Quantity(ItemDesk) != 1 {
+					t.Fatalf("player qty got %d", got.PlayerInventory.Quantity(ItemDesk))
+				}
+				if got.CompanyInventory.Quantity(ItemDesk) != 0 {
+					t.Fatalf("company qty got %d", got.CompanyInventory.Quantity(ItemDesk))
+				}
+			},
+		},
+		{name: "unknown item", state: base, catalog: catalog, itemID: ItemID("unknown"), wantErr: ErrItemNotFound},
+		{name: "insufficient funds", state: NewInitialState(10, catalog, econ), catalog: catalog, itemID: ItemComputer, wantErr: ErrInsufficientFunds},
 		{
 			name:    "max owned",
 			state:   mustPurchase(t, base, catalog, econ, ItemChair),
+			catalog: catalog,
 			itemID:  ItemChair,
 			wantErr: ErrMaxOwned,
 		},
@@ -125,7 +193,7 @@ func TestApplyPurchaseTable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ApplyPurchase(tt.state, catalog, econ, tt.itemID)
+			got, err := ApplyPurchase(tt.state, tt.catalog, econ, tt.itemID)
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {
 					t.Fatalf("err got %v want %v", err, tt.wantErr)
@@ -144,10 +212,18 @@ func TestApplyPurchaseTable(t *testing.T) {
 
 func TestApplyPurchaseInvalidStateBranch(t *testing.T) {
 	cfg := CatalogConfig{Items: map[ItemID]Item{
-		ItemDesk: {ItemID: ItemDesk, DisplayName: "Desk", Category: "Office", Price: -1, MaxOwned: 1},
+		ItemDesk: {
+			ItemID:         ItemDesk,
+			DisplayName:    "Desk",
+			Category:       "Office",
+			Ownership:      OwnershipCompany,
+			Price:          -1,
+			DurabilityDays: 0,
+			MaxOwned:       1,
+		},
 	}}
 	catalog := NewCatalog(cfg)
-	state := NewInitialState(0, catalog, DefaultEconomyConfig())
+	state := NewInitialState(10, catalog, DefaultEconomyConfig())
 	_, err := ApplyPurchase(state, catalog, DefaultEconomyConfig(), ItemDesk)
 	if !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("got %v", err)
@@ -156,7 +232,15 @@ func TestApplyPurchaseInvalidStateBranch(t *testing.T) {
 
 func TestApplyPurchaseUnlimitedOwnership(t *testing.T) {
 	catalog := NewCatalog(CatalogConfig{Items: map[ItemID]Item{
-		ItemDesk: {ItemID: ItemDesk, DisplayName: "Desk", Category: "Office", Price: 1, MaxOwned: 0},
+		ItemDesk: {
+			ItemID:         ItemDesk,
+			DisplayName:    "Desk",
+			Category:       "Office",
+			Ownership:      OwnershipCompany,
+			Price:          1,
+			DurabilityDays: 5,
+			MaxOwned:       0,
+		},
 	}})
 	state := NewInitialState(10, catalog, DefaultEconomyConfig())
 	next, err := ApplyPurchase(state, catalog, DefaultEconomyConfig(), ItemDesk)
@@ -167,8 +251,8 @@ func TestApplyPurchaseUnlimitedOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if next.Inventory.Quantity(ItemDesk) != 2 {
-		t.Fatalf("got qty %d", next.Inventory.Quantity(ItemDesk))
+	if next.CompanyInventory.Quantity(ItemDesk) != 2 {
+		t.Fatalf("got qty %d", next.CompanyInventory.Quantity(ItemDesk))
 	}
 }
 
@@ -185,8 +269,9 @@ func TestRecomputeMetricsFormulaFlow(t *testing.T) {
 	cfg.ReputationBPSPerUnit = 10
 
 	state := GameState{
-		Cash:      1000,
-		Inventory: NewInventoryFromEntries([]InventoryEntry{{ItemID: ItemComputer, Quantity: 1}}),
+		Cash:             1000,
+		PlayerInventory:  NewInventory(),
+		CompanyInventory: NewInventoryFromEntries([]InventoryItemInstance{{ItemID: ItemComputer, Quantity: 1, RemainingDurabilityDays: 120}}),
 		Metrics: Metrics{
 			Reputation: 2,
 			TechDebt:   1,
@@ -213,21 +298,24 @@ func TestRecomputeMetricsFormulaFlow(t *testing.T) {
 	}
 }
 
-func TestRecomputeMetricsClamps(t *testing.T) {
+func TestRecomputeMetricsClampsAndBrokenEffectsExcluded(t *testing.T) {
 	catalog := NewCatalog(CatalogConfig{Items: map[ItemID]Item{
 		ItemDesk: {
-			ItemID:      ItemDesk,
-			DisplayName: "Desk",
-			Category:    "Office",
-			Price:       1,
-			Effects:     Effects{ProductivityDelta: -100, MoraleDelta: -100},
-			MaxOwned:    10,
+			ItemID:         ItemDesk,
+			DisplayName:    "Desk",
+			Category:       "Office",
+			Ownership:      OwnershipCompany,
+			Price:          1,
+			DurabilityDays: 10,
+			Effects:        Effects{ProductivityDelta: -100, MoraleDelta: -100},
+			MaxOwned:       10,
 		},
 	}})
 	state := GameState{
-		Cash:      0,
-		Inventory: NewInventoryFromEntries([]InventoryEntry{{ItemID: ItemDesk, Quantity: 1}}),
-		Metrics:   Metrics{TechDebt: 100},
+		Cash:             0,
+		PlayerInventory:  NewInventory(),
+		CompanyInventory: NewInventoryFromEntries([]InventoryItemInstance{{ItemID: ItemDesk, Quantity: 1, RemainingDurabilityDays: 0}}),
+		Metrics:          Metrics{TechDebt: 100},
 	}
 	cfg := DefaultEconomyConfig()
 	cfg.BaseBurn = 0
@@ -235,11 +323,44 @@ func TestRecomputeMetricsClamps(t *testing.T) {
 	if next.Metrics.Productivity != 0 {
 		t.Fatalf("got %d", next.Metrics.Productivity)
 	}
-	if next.Metrics.Morale != 0 {
+	if next.Metrics.Morale != 10 {
 		t.Fatalf("got %d", next.Metrics.Morale)
 	}
 	if next.Metrics.RunwayMonths != 0 {
 		t.Fatalf("got %f", next.Metrics.RunwayMonths)
+	}
+}
+
+func TestRecomputeMetricsMoraleClampAndSortTieBreakers(t *testing.T) {
+	catalog := NewCatalog(CatalogConfig{Items: map[ItemID]Item{
+		ItemDesk: {
+			ItemID:         ItemDesk,
+			DisplayName:    "Desk",
+			Category:       "Office",
+			Ownership:      OwnershipCompany,
+			Price:          1,
+			DurabilityDays: 10,
+			Effects:        Effects{MoraleDelta: -100},
+			MaxOwned:       10,
+		},
+	}})
+	state := GameState{
+		Cash:            0,
+		PlayerInventory: NewInventory(),
+		CompanyInventory: NewInventoryFromEntries([]InventoryItemInstance{
+			{ItemID: ItemDesk, Quantity: 2, AcquiredAtDay: 1, RemainingDurabilityDays: 5},
+			{ItemID: ItemDesk, Quantity: 1, AcquiredAtDay: 1, RemainingDurabilityDays: 5},
+		}),
+	}
+	entries := state.CompanyInventory.Entries()
+	if entries[0].Quantity != 1 || entries[1].Quantity != 2 {
+		t.Fatalf("expected quantity tie-break sorting, got %+v", entries)
+	}
+	cfg := DefaultEconomyConfig()
+	cfg.BaseMorale = 0
+	next := RecomputeMetrics(state, catalog, cfg)
+	if next.Metrics.Morale != 0 {
+		t.Fatalf("expected morale clamp to 0, got %d", next.Metrics.Morale)
 	}
 }
 

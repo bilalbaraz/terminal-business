@@ -1,68 +1,118 @@
 package store
 
-type Inventory struct {
-	quantities map[ItemID]int
+import "sort"
+
+type InventoryItemInstance struct {
+	ItemID                  ItemID `json:"item_id"`
+	Quantity                int    `json:"quantity"`
+	AcquiredAtDay           int    `json:"acquired_at_day"`
+	RemainingDurabilityDays int    `json:"remaining_durability_days"`
 }
 
-type InventoryEntry struct {
-	ItemID   ItemID `json:"item_id"`
-	Quantity int    `json:"quantity"`
+type Inventory struct {
+	instances []InventoryItemInstance
 }
 
 func NewInventory() Inventory {
-	return Inventory{quantities: map[ItemID]int{}}
+	return Inventory{instances: []InventoryItemInstance{}}
 }
 
-func NewInventoryFromEntries(entries []InventoryEntry) Inventory {
-	inv := NewInventory()
+func NewInventoryFromEntries(entries []InventoryItemInstance) Inventory {
+	items := make([]InventoryItemInstance, 0, len(entries))
 	for _, e := range entries {
-		if e.Quantity > 0 {
-			inv.quantities[e.ItemID] = e.Quantity
+		if e.Quantity <= 0 {
+			continue
 		}
-	}
-	return inv
-}
-
-func (i Inventory) Quantity(id ItemID) int {
-	return i.quantities[id]
-}
-
-func (i Inventory) WithAdded(id ItemID, delta int) Inventory {
-	next := NewInventoryFromEntries(i.Entries())
-	next.quantities[id] += delta
-	if next.quantities[id] <= 0 {
-		delete(next.quantities, id)
-	}
-	return next
-}
-
-func (i Inventory) Entries() []InventoryEntry {
-	ids := make([]ItemID, 0, len(i.quantities))
-	for id := range i.quantities {
-		ids = append(ids, id)
-	}
-	for a := 0; a < len(ids)-1; a++ {
-		for b := a + 1; b < len(ids); b++ {
-			if ids[a] > ids[b] {
-				ids[a], ids[b] = ids[b], ids[a]
-			}
+		if e.RemainingDurabilityDays < 0 {
+			e.RemainingDurabilityDays = 0
 		}
+		items = append(items, e)
 	}
-	entries := make([]InventoryEntry, 0, len(ids))
-	for _, id := range ids {
-		entries = append(entries, InventoryEntry{ItemID: id, Quantity: i.quantities[id]})
-	}
-	return entries
+	sortInstances(items)
+	return Inventory{instances: items}
 }
 
-func AggregateEffects(c Catalog, inv Inventory) Effects {
-	total := Effects{}
-	for _, item := range c.OrderedItems() {
-		qty := inv.Quantity(item.ItemID)
-		total.ProductivityDelta += item.Effects.ProductivityDelta * qty
-		total.MoraleDelta += item.Effects.MoraleDelta * qty
-		total.TechDebtDelta += item.Effects.TechDebtDelta * qty
-		total.ReputationDelta += item.Effects.ReputationDelta * qty
+func (i Inventory) Entries() []InventoryItemInstance {
+	out := make([]InventoryItemInstance, len(i.instances))
+	copy(out, i.instances)
+	sortInstances(out)
+	return out
+}
+
+func (i Inventory) Quantity(itemID ItemID) int {
+	total := 0
+	for _, inst := range i.instances {
+		if inst.ItemID == itemID {
+			total += inst.Quantity
+		}
 	}
 	return total
+}
+
+func (i Inventory) ActiveQuantity(itemID ItemID) int {
+	total := 0
+	for _, inst := range i.instances {
+		if inst.ItemID == itemID && inst.RemainingDurabilityDays > 0 {
+			total += inst.Quantity
+		}
+	}
+	return total
+}
+
+func (i Inventory) Add(item Item, day int, quantity int) Inventory {
+	if quantity <= 0 {
+		return i
+	}
+	next := i.Entries()
+	next = append(next, InventoryItemInstance{
+		ItemID:                  item.ItemID,
+		Quantity:                quantity,
+		AcquiredAtDay:           day,
+		RemainingDurabilityDays: item.DurabilityDays,
+	})
+	sortInstances(next)
+	return Inventory{instances: next}
+}
+
+func (i Inventory) DecrementDurabilityByDay() Inventory {
+	next := i.Entries()
+	for idx := range next {
+		if next[idx].RemainingDurabilityDays > 0 {
+			next[idx].RemainingDurabilityDays--
+		}
+	}
+	return Inventory{instances: next}
+}
+
+func (i Inventory) ActiveEffects(c Catalog) Effects {
+	total := Effects{}
+	for _, inst := range i.instances {
+		if inst.RemainingDurabilityDays <= 0 {
+			continue
+		}
+		item, ok := c.Item(inst.ItemID)
+		if !ok {
+			continue
+		}
+		total.ProductivityDelta += item.Effects.ProductivityDelta * inst.Quantity
+		total.MoraleDelta += item.Effects.MoraleDelta * inst.Quantity
+		total.TechDebtDelta += item.Effects.TechDebtDelta * inst.Quantity
+		total.ReputationDelta += item.Effects.ReputationDelta * inst.Quantity
+	}
+	return total
+}
+
+func sortInstances(items []InventoryItemInstance) {
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].ItemID != items[j].ItemID {
+			return items[i].ItemID < items[j].ItemID
+		}
+		if items[i].AcquiredAtDay != items[j].AcquiredAtDay {
+			return items[i].AcquiredAtDay < items[j].AcquiredAtDay
+		}
+		if items[i].RemainingDurabilityDays != items[j].RemainingDurabilityDays {
+			return items[i].RemainingDurabilityDays < items[j].RemainingDurabilityDays
+		}
+		return items[i].Quantity < items[j].Quantity
+	})
 }

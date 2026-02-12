@@ -24,9 +24,14 @@ type EconomyConfig struct {
 }
 
 type GameState struct {
-	Cash      int       `json:"cash"`
-	Inventory Inventory `json:"inventory"`
-	Metrics   Metrics   `json:"metrics"`
+	Day              int            `json:"day"`
+	Cash             int            `json:"cash"`
+	Headcount        int            `json:"headcount"`
+	PlayerInventory  Inventory      `json:"player_inventory"`
+	CompanyInventory Inventory      `json:"company_inventory"`
+	ActiveJobs       []ActiveJob    `json:"active_jobs"`
+	CompletedJobs    []CompletedJob `json:"completed_jobs"`
+	Metrics          Metrics        `json:"metrics"`
 }
 
 func DefaultEconomyConfig() EconomyConfig {
@@ -43,12 +48,19 @@ func DefaultEconomyConfig() EconomyConfig {
 }
 
 func NewInitialState(startingCash int, catalog Catalog, cfg EconomyConfig) GameState {
-	s := GameState{Cash: startingCash, Inventory: NewInventory()}
+	s := GameState{
+		Cash:             startingCash,
+		Headcount:        1,
+		PlayerInventory:  NewInventory(),
+		CompanyInventory: NewInventory(),
+		ActiveJobs:       []ActiveJob{},
+		CompletedJobs:    []CompletedJob{},
+	}
 	return RecomputeMetrics(s, catalog, cfg)
 }
 
 func RecomputeMetrics(state GameState, catalog Catalog, cfg EconomyConfig) GameState {
-	effects := AggregateEffects(catalog, state.Inventory)
+	effects := state.CompanyInventory.ActiveEffects(catalog)
 	m := state.Metrics
 	m.Cash = state.Cash
 	m.Productivity = cfg.BaseProductivity + effects.ProductivityDelta - m.TechDebt
