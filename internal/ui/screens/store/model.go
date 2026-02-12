@@ -119,10 +119,12 @@ func (m Model) View() string {
 
 	selected := m.SelectedItem()
 	right := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Width(46).Padding(1, 2).Render(
-		fmt.Sprintf("%s\n\nCategory: %s\nPrice: %d\n\nEffects\n+Productivity: %d\n+Morale: %d\nTech Debt: %+d\nReputation: %+d",
+		fmt.Sprintf("%s\n\nCategory: %s\nPrice: %d\nDurability: %d days\nOwnership: %s\n\nEffects\n+Productivity: %d\n+Morale: %d\nTech Debt: %+d\nReputation: %+d",
 			selected.DisplayName,
 			selected.Category,
 			selected.Price,
+			selected.DurabilityDays,
+			selected.Ownership,
 			selected.Effects.ProductivityDelta,
 			selected.Effects.MoraleDelta,
 			selected.Effects.TechDebtDelta,

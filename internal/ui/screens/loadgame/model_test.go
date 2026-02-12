@@ -15,10 +15,10 @@ func TestLoadGameEmptyStateShortcut(t *testing.T) {
 	if !m.Empty() {
 		t.Fatal("expected empty")
 	}
-	if a := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}}); a != ActionNewGame {
+	if a := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}}); a.Type != ActionNewGame {
 		t.Fatalf("expected new game action, got %v", a)
 	}
-	if a := m.Update(tea.KeyMsg{Type: tea.KeyEnter}); a != ActionNone {
+	if a := m.Update(tea.KeyMsg{Type: tea.KeyEnter}); a.Type != ActionNone {
 		t.Fatalf("expected no action, got %v", a)
 	}
 }
@@ -26,16 +26,16 @@ func TestLoadGameEmptyStateShortcut(t *testing.T) {
 func TestLoadGameSelectionAndCancel(t *testing.T) {
 	now := time.Now()
 	m := New([]persistence.SaveIndexEntry{{SaveID: "id1", CompanyName: "Acme", CompanyType: "SaaS", LastPlayedAt: now}})
-	if a := m.Update(tea.KeyMsg{Type: tea.KeyEnter}); a != ActionSelect {
+	if a := m.Update(tea.KeyMsg{Type: tea.KeyEnter}); a.Type != ActionSelect {
 		t.Fatalf("expected select action, got %v", a)
 	}
 	if got := m.SelectedSaveID(); got != "id1" {
 		t.Fatalf("got %s", got)
 	}
-	if a := m.Update(tea.KeyMsg{Type: tea.KeyEsc}); a != ActionCancel {
+	if a := m.Update(tea.KeyMsg{Type: tea.KeyEsc}); a.Type != ActionCancel {
 		t.Fatalf("expected cancel action, got %v", a)
 	}
-	if a := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}}); a != ActionCancel {
+	if a := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}}); a.Type != ActionCancel {
 		t.Fatalf("expected q cancel action, got %v", a)
 	}
 }
@@ -71,5 +71,24 @@ func TestLoadGameSelectedSaveIDOutOfRange(t *testing.T) {
 	m.menu.Cursor = 9
 	if got := m.SelectedSaveID(); got != "" {
 		t.Fatalf("got %s", got)
+	}
+}
+
+func TestLoadGameDeleteConfirmFlow(t *testing.T) {
+	now := time.Now()
+	m := New([]persistence.SaveIndexEntry{{SaveID: "id1", CompanyName: "Acme", CompanyType: "SaaS", LastPlayedAt: now}})
+	if a := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}}); a.Type != ActionNone {
+		t.Fatalf("expected none when opening delete confirm, got %v", a)
+	}
+	if !strings.Contains(m.View(), "Delete Save?") {
+		t.Fatal("expected delete confirmation text")
+	}
+	if a := m.Update(tea.KeyMsg{Type: tea.KeyEsc}); a.Type != ActionNone {
+		t.Fatalf("expected none when canceling confirm, got %v", a)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	a := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if a.Type != ActionDelete || a.SaveID != "id1" {
+		t.Fatalf("unexpected delete action %+v", a)
 	}
 }

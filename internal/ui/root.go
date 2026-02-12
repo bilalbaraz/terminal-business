@@ -9,6 +9,7 @@ import (
 	"terminal-business/internal/app"
 	domain "terminal-business/internal/domain/store"
 	"terminal-business/internal/persistence"
+	"terminal-business/internal/sim"
 	"terminal-business/internal/ui/components"
 	"terminal-business/internal/ui/screens/boot"
 	"terminal-business/internal/ui/screens/dashboard"
@@ -33,8 +34,13 @@ type loadResultMsg struct {
 }
 
 type snapshotPayload struct {
-	Cash      int                     `json:"cash"`
-	Inventory []domain.InventoryEntry `json:"inventory"`
+	Day              int                            `json:"day"`
+	Cash             int                            `json:"cash"`
+	Headcount        int                            `json:"headcount"`
+	PlayerInventory  []domain.InventoryItemInstance `json:"player_inventory"`
+	CompanyInventory []domain.InventoryItemInstance `json:"company_inventory"`
+	ActiveJobs       []domain.ActiveJob             `json:"active_jobs"`
+	CompletedJobs    []domain.CompletedJob          `json:"completed_jobs"`
 }
 
 type Model struct {
@@ -43,10 +49,13 @@ type Model struct {
 	clock   app.Clock
 	rng     app.RNG
 
-	catalog   domain.Catalog
-	economy   domain.EconomyConfig
-	bootstrap domain.BootstrapConfig
-	gameState domain.GameState
+	catalog      domain.Catalog
+	economy      domain.EconomyConfig
+	bootstrap    domain.BootstrapConfig
+	gameState    domain.GameState
+	simSeed      int64
+	marketTick   int
+	marketOffers []domain.JobOffer
 
 	boot      boot.Model
 	newGame   newgame.Model
@@ -77,7 +86,7 @@ func NewModel(store persistence.Store, clk app.Clock, rng app.RNG, entries []per
 	dash.SetStoreCatalog(catalog)
 	dash.SetGameState(game)
 
-	return &Model{
+	m := &Model{
 		machine:      app.NewMachine(),
 		store:        store,
 		clock:        clk,
@@ -86,6 +95,9 @@ func NewModel(store persistence.Store, clk app.Clock, rng app.RNG, entries []per
 		economy:      economy,
 		bootstrap:    bootstrap,
 		gameState:    game,
+		simSeed:      0,
+		marketTick:   -1,
+		marketOffers: nil,
 		boot:         boot.New(),
 		newGame:      newgame.New(),
 		loadGame:     loadgame.New(entries),
@@ -96,6 +108,8 @@ func NewModel(store persistence.Store, clk app.Clock, rng app.RNG, entries []per
 		recoverModal: components.Modal{Actions: []string{"Back to Menu"}},
 		loadingFrom:  app.BootMenuState,
 	}
+	m.refreshMarketOffers()
+	return m
 }
 
 func (m *Model) Init() tea.Cmd { return nil }
@@ -171,7 +185,7 @@ func (m *Model) handleNewGame(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleLoadGame(msg tea.Msg) (tea.Model, tea.Cmd) {
 	action := m.loadGame.Update(msg)
-	switch action {
+	switch action.Type {
 	case loadgame.ActionCancel:
 		_ = m.machine.Transition(app.EventBack)
 	case loadgame.ActionNewGame:
@@ -180,6 +194,20 @@ func (m *Model) handleLoadGame(msg tea.Msg) (tea.Model, tea.Cmd) {
 		_ = m.machine.Transition(app.EventSelectSave)
 		m.loadingFrom = app.LoadGameListState
 		return m, m.loadSaveCmd(m.loadGame.SelectedSaveID())
+	case loadgame.ActionDelete:
+		if err := m.store.DeleteSave(context.Background(), action.SaveID); err != nil {
+			m.loadGame.SetError("Delete failed. Rebuilding index...")
+			_, _ = m.store.LoadIndex(context.Background())
+		} else {
+			m.toast.Show("Deleted " + action.Label)
+			m.loadGame.SetError("")
+		}
+		entries, err := m.store.LoadIndex(context.Background())
+		if err != nil {
+			m.loadGame.SetError("Could not refresh saves list.")
+			entries = nil
+		}
+		m.loadGame.SetEntries(entries)
 	}
 	return m, nil
 }
@@ -199,9 +227,13 @@ func (m *Model) handleLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.gameState = msg.gameState
+		m.simSeed = msg.save.SimulationSeed
+		m.refreshMarketOffers()
 		m.dashboard.SetCompany(msg.save.SaveIdentity)
 		m.dashboard.SetGameState(msg.gameState)
 		m.dashboard.SetStoreError("")
+		m.dashboard.SetMarketJobs(m.marketOffers)
+		m.dashboard.SetMarketError("")
 		_ = m.machine.Transition(app.EventLoadSucceeded)
 		m.toast.Show("Company created and loaded")
 		return m, nil
@@ -215,9 +247,13 @@ func (m *Model) handleLoading(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.gameState = msg.gameState
+		m.simSeed = msg.save.SimulationSeed
+		m.refreshMarketOffers()
 		m.dashboard.SetCompany(msg.save.SaveIdentity)
 		m.dashboard.SetGameState(msg.gameState)
 		m.dashboard.SetStoreError("")
+		m.dashboard.SetMarketJobs(m.marketOffers)
+		m.dashboard.SetMarketError("")
 		_ = m.machine.Transition(app.EventLoadSucceeded)
 		m.toast.Show("Save loaded")
 		return m, nil
@@ -253,6 +289,33 @@ func (m *Model) handleDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dashboard.SetStoreError("")
 		item, _ := m.catalog.Item(action.ItemID)
 		m.toast.Show("Purchased " + item.DisplayName)
+	case dashboard.ActionAcceptJob:
+		next, err := domain.AcceptJob(m.gameState, m.marketOffers, action.JobID, "founder", m.gameState.Day)
+		if err != nil {
+			if errors.Is(err, domain.ErrNotOperational) {
+				m.dashboard.SetMarketError("You need Desk + Chair + Computer to take jobs.")
+				m.toast.Show("Market blocked: not operational")
+				return m, nil
+			}
+			if errors.Is(err, domain.ErrCapacityFull) || errors.Is(err, domain.ErrAssigneeBusy) {
+				m.dashboard.SetMarketError("Capacity full: one active job per person.")
+				m.toast.Show("Market blocked: capacity full")
+				return m, nil
+			}
+			m.dashboard.SetMarketError("Could not accept job.")
+			m.toast.Show("Job accept failed")
+			return m, nil
+		}
+		m.gameState = next
+		m.dashboard.SetGameState(next)
+		m.dashboard.SetMarketError("")
+		m.toast.Show("Job accepted")
+	case dashboard.ActionAdvanceDay:
+		m.gameState = sim.AdvanceDay(m.gameState, m.catalog, m.economy)
+		m.refreshMarketOffers()
+		m.dashboard.SetGameState(m.gameState)
+		m.dashboard.SetMarketJobs(m.marketOffers)
+		m.toast.Show("Advanced to next day")
 	}
 	return m, nil
 }
@@ -314,6 +377,7 @@ func (m *Model) createSaveCmd(name, companyType string) tea.Cmd {
 		if err != nil {
 			return createResultMsg{err: err}
 		}
+		seed := m.rng.Int63()
 		save := persistence.SaveFile{
 			SaveIdentity: persistence.SaveIdentity{
 				CompanyName:  name,
@@ -322,8 +386,8 @@ func (m *Model) createSaveCmd(name, companyType string) tea.Cmd {
 				LastPlayedAt: now,
 				Version:      1,
 			},
-			SimulationSeed:      m.rng.Int63(),
-			TickCounter:         0,
+			SimulationSeed:      seed,
+			TickCounter:         int64(initialState.Day),
 			DomainStateSnapshot: encodeSnapshot(initialState),
 			Version:             1,
 		}
@@ -355,14 +419,32 @@ func (m *Model) loadSaveCmd(saveID string) tea.Cmd {
 		}
 		loaded.SaveIdentity.LastPlayedAt = now
 		state, err := decodeSnapshot(loaded.DomainStateSnapshot, m.catalog, m.economy)
-		return loadResultMsg{save: loaded, gameState: state, err: err}
+		if err != nil {
+			return loadResultMsg{err: err}
+		}
+		loaded.TickCounter = int64(state.Day)
+		return loadResultMsg{save: loaded, gameState: state, err: nil}
 	}
+}
+
+func (m *Model) refreshMarketOffers() {
+	if m.marketTick == m.gameState.Day && m.marketOffers != nil {
+		return
+	}
+	m.marketTick = m.gameState.Day
+	m.marketOffers = domain.MarketOffersForTick(m.simSeed, m.gameState.Day, 6)
+	m.dashboard.SetMarketJobs(m.marketOffers)
 }
 
 func encodeSnapshot(state domain.GameState) map[string]any {
 	return map[string]any{
-		"cash":      state.Cash,
-		"inventory": state.Inventory.Entries(),
+		"day":               state.Day,
+		"cash":              state.Cash,
+		"headcount":         state.Headcount,
+		"player_inventory":  state.PlayerInventory.Entries(),
+		"company_inventory": state.CompanyInventory.Entries(),
+		"active_jobs":       state.ActiveJobs,
+		"completed_jobs":    state.CompletedJobs,
 	}
 }
 
@@ -380,8 +462,13 @@ func decodeSnapshot(snapshot map[string]any, catalog domain.Catalog, economy dom
 		return domain.GameState{}, err
 	}
 	state := domain.GameState{
-		Cash:      payload.Cash,
-		Inventory: domain.NewInventoryFromEntries(payload.Inventory),
+		Day:              payload.Day,
+		Cash:             payload.Cash,
+		Headcount:        payload.Headcount,
+		PlayerInventory:  domain.NewInventoryFromEntries(payload.PlayerInventory),
+		CompanyInventory: domain.NewInventoryFromEntries(payload.CompanyInventory),
+		ActiveJobs:       payload.ActiveJobs,
+		CompletedJobs:    payload.CompletedJobs,
 	}
 	state = domain.RecomputeMetrics(state, catalog, economy)
 	return state, nil

@@ -52,6 +52,9 @@ func TestDashboardStoreIntegrationBuyAction(t *testing.T) {
 	if strings.Contains(m.View(), "Store Items") {
 		t.Fatal("should not enter store on non-store section")
 	}
+	if b := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}}); b.Type != ActionNone {
+		t.Fatalf("expected q to close sub-view, got %+v", b)
+	}
 	if b := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}}); b.Type != ActionBack {
 		t.Fatalf("expected q back, got %+v", b)
 	}

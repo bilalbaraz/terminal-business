@@ -27,6 +27,7 @@ type fakeStore struct {
 	loadErr   error
 	touchErr  error
 	createErr error
+	deleteErr error
 }
 
 func (f *fakeStore) LoadIndex(context.Context) ([]persistence.SaveIndexEntry, error) {
@@ -70,6 +71,23 @@ func (f *fakeStore) TouchSave(_ context.Context, id string, t time.Time) error {
 	s := f.saves[id]
 	s.SaveIdentity.LastPlayedAt = t
 	f.saves[id] = s
+	return nil
+}
+
+func (f *fakeStore) DeleteSave(_ context.Context, id string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	if f.saves != nil {
+		delete(f.saves, id)
+	}
+	filtered := make([]persistence.SaveIndexEntry, 0, len(f.entries))
+	for _, e := range f.entries {
+		if e.SaveID != id {
+			filtered = append(filtered, e)
+		}
+	}
+	f.entries = filtered
 	return nil
 }
 
