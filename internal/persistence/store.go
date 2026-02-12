@@ -22,6 +22,7 @@ type Store interface {
 	CreateSave(context.Context, SaveFile) (SaveFile, error)
 	LoadSave(context.Context, string) (SaveFile, error)
 	TouchSave(context.Context, string, time.Time) error
+	DeleteSave(context.Context, string) error
 }
 
 type LocalStore struct {
@@ -132,6 +133,17 @@ func (s *LocalStore) TouchSave(ctx context.Context, saveID string, t time.Time) 
 	return s.upsertIndex(save, path)
 }
 
+func (s *LocalStore) DeleteSave(_ context.Context, saveID string) error {
+	if err := s.ensureDirs(); err != nil {
+		return err
+	}
+	path := s.savePath(saveID)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return s.removeIndexEntry(saveID)
+}
+
 func (s *LocalStore) upsertIndex(save SaveFile, path string) error {
 	idx, err := s.readIndex()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -159,6 +171,29 @@ func (s *LocalStore) upsertIndex(save SaveFile, path string) error {
 	if !found {
 		idx.Entries = append(idx.Entries, entry)
 	}
+	sortEntries(idx.Entries)
+	return writeAtomicJSON(s.indexPath(), idx)
+}
+
+func (s *LocalStore) removeIndexEntry(saveID string) error {
+	idx, err := s.readIndex()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		rebuilt, rebuildErr := s.rebuildIndex()
+		if rebuildErr != nil {
+			return err
+		}
+		idx = rebuilt
+	}
+	filtered := make([]SaveIndexEntry, 0, len(idx.Entries))
+	for _, e := range idx.Entries {
+		if e.SaveID != saveID {
+			filtered = append(filtered, e)
+		}
+	}
+	idx.Entries = filtered
 	sortEntries(idx.Entries)
 	return writeAtomicJSON(s.indexPath(), idx)
 }
