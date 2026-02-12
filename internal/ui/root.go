@@ -20,8 +20,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const defaultStartingCash = 2000
-
 type createResultMsg struct {
 	save      persistence.SaveFile
 	gameState domain.GameState
@@ -47,6 +45,7 @@ type Model struct {
 
 	catalog   domain.Catalog
 	economy   domain.EconomyConfig
+	bootstrap domain.BootstrapConfig
 	gameState domain.GameState
 
 	boot      boot.Model
@@ -66,7 +65,14 @@ type Model struct {
 func NewModel(store persistence.Store, clk app.Clock, rng app.RNG, entries []persistence.SaveIndexEntry) *Model {
 	catalog := domain.DefaultCatalog()
 	economy := domain.DefaultEconomyConfig()
-	game := domain.NewInitialState(defaultStartingCash, catalog, economy)
+	bootstrap := domain.DefaultBootstrapConfig(catalog)
+	if err := domain.ValidateBootstrapConfig(catalog, bootstrap); err != nil {
+		panic(err)
+	}
+	game, err := domain.BootstrapState(catalog, economy, bootstrap)
+	if err != nil {
+		panic(err)
+	}
 	dash := dashboard.New()
 	dash.SetStoreCatalog(catalog)
 	dash.SetGameState(game)
@@ -78,6 +84,7 @@ func NewModel(store persistence.Store, clk app.Clock, rng app.RNG, entries []per
 		rng:          rng,
 		catalog:      catalog,
 		economy:      economy,
+		bootstrap:    bootstrap,
 		gameState:    game,
 		boot:         boot.New(),
 		newGame:      newgame.New(),
@@ -303,7 +310,10 @@ func (m *Model) handleModal(msg tea.Msg) tea.Cmd {
 func (m *Model) createSaveCmd(name, companyType string) tea.Cmd {
 	return func() tea.Msg {
 		now := m.clock.Now()
-		initialState := domain.NewInitialState(defaultStartingCash, m.catalog, m.economy)
+		initialState, err := domain.BootstrapState(m.catalog, m.economy, m.bootstrap)
+		if err != nil {
+			return createResultMsg{err: err}
+		}
 		save := persistence.SaveFile{
 			SaveIdentity: persistence.SaveIdentity{
 				CompanyName:  name,
@@ -358,7 +368,8 @@ func encodeSnapshot(state domain.GameState) map[string]any {
 
 func decodeSnapshot(snapshot map[string]any, catalog domain.Catalog, economy domain.EconomyConfig) (domain.GameState, error) {
 	if snapshot == nil {
-		return domain.NewInitialState(defaultStartingCash, catalog, economy), nil
+		bootstrap := domain.DefaultBootstrapConfig(catalog)
+		return domain.BootstrapState(catalog, economy, bootstrap)
 	}
 	raw, err := json.Marshal(snapshot)
 	if err != nil {
